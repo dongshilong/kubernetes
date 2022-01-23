@@ -478,3 +478,31 @@ spec:
   - Egress
   - Ingress
 
+
+kubectl create ns ns-target 
+kubectl create ns ns-app1 
+kubectl create ns ns-app2
+kubectl -n ns-target create deployment nginx-target --image=nginx:1.19.4
+kubectl -n ns-app1 create deployment --nginx-app1 --image=nginx:1.19.4
+kubectl -n ns-app2 create deployment --nginx-app2 --image=nginx:1.19.4
+target:
+kubectl exec -it deployment/nginx-target -- /bin/sh
+echo "hi, nginx-target" > /usr/share/nginx/html/index.html 
+app1: echo "hi, nginx-app1!" > /usr/share/nginx/html/index.html 
+app2: echo "hi, nginx-app2!" > /usr/share/nginx/html/index.html
+
+kubectl -n ns-target create deployment image=ubuntu:20.04 -- sleep infinity
+kubectl -n ns-app1 create deployment image=ubuntu:20.04 -- sleep infinity
+kubectl -n ns-app2 create deployment image=ubuntu:20.04 -- sleep infinity
+
+create 3 deployment for Ubuntu, to test the connectivity:
+ubuntu-target -- ubuntu-app1 -- ubuntu-app2 --
+kubectl -n ns-target create deployment ubuntu-target --image=ubuntu:20.04 -- sleep infinity
+
+Get svc and endpoints (ep):
+
+nginx-target -- nginx-app1 -- nginx-app2 --
+在 3 个 ubuntu 中分别起 81 端口，python3 -m http.server 81 &
+kubectl -n ns-target expose deployment nginx-target --name=svc- nginx-target --port=80
+kubectl -n ns-app1 expose deployment nginx-app1 --name=svc- nginx-app1 --port=80
+kubectl -n ns-app2 expose deployment nginx-app2 --name=svc- nginx-app2 --port=80
