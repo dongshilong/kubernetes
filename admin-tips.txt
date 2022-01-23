@@ -1,0 +1,480 @@
+apt-get update
+
+cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+br_netfilter
+EOF
+
+cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+EOF
+sudo sysctl --system
+
+apt-get install -y docker
+
+sudo apt-get install -y apt-transport-https ca-certificates curl
+
+-- set the image repository to aliyun mirror
+sudo curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://mirrors.aliyun.com/kubernetes/apt/doc/apt-key.gpg
+apt-key add /usr/share/keyrings/kubernetes-archive-keyring.gpg
+tee "deb https://mirrors.aliyun.com/kubernetes/apt/ kubernetes-xenial main" >> /etc/apt/sources.list.d/kubernetes.list
+
+apt-get update
+
+-- install the kubeadm and kubelet and kubectl
+sudo apt-get install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+
+--- set the CGroup Driver
+sudo mkdir /etc/docker
+cat <<EOF | sudo tee /etc/docker/daemon.json
+{
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2"
+}
+EOF
+
+sudo systemctl enable docker
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+
+--check the needed docker images for kubeadm
+kubeadm config images list
+-- result will be something like:
+k8s.gcr.io/kube-apiserver:v1.23.1
+k8s.gcr.io/kube-controller-manager:v1.23.1
+k8s.gcr.io/kube-scheduler:v1.23.1
+k8s.gcr.io/kube-proxy:v1.23.1
+k8s.gcr.io/pause:3.6
+k8s.gcr.io/etcd:3.5.1-0
+k8s.gcr.io/coredns/coredns:v1.8.6
+
+-- replace with the equivalent in docker hub
+docker login
+
+docker pull 
+docker pull k8simage/kube-apiserver:v1.23.1
+docker pull k8simage/kube-controller-manager:v1.23.1
+docker pull k8simage/kube-scheduler:v1.23.1
+docker pull k8simage/kube-proxy:v1.23.1
+docker pull k8simage/pause:3.6
+docker pull k8simage/etcd:3.5.1-0
+docker pull 274658950/coredns:v1.8.6 -- this is because k8simage rep does't has the version.
+
+-- add the tag that'll be recognized by kubeadm
+docker tag k8simage/kube-apiserver:v1.23.1 k8s.gcr.io/kube-apiserver:v1.23.1
+docker tag k8simage/kube-controller-manager:v1.23.1 k8s.gcr.io/kube-controller-manager:v1.23.1
+docker tag k8simage/kube-scheduler:v1.23.1 k8s.gcr.io/kube-scheduler:v1.23.1
+docker tag k8simage/kube-proxy:v1.23.1 k8s.gcr.io/kube-proxy:v1.23.1
+docker tag k8simage/pause:3.6 k8s.gcr.io/pause:3.6
+docker tag k8simage/etcd:3.5.1-0 k8s.gcr.io/etcd:3.5.1-0
+docker tag 274658950/coredns:v1.8.6 k8s.gcr.io/coredns/coredns:v1.8.6
+
+-- edit the default image repository, you can change the default configmap to point to a different image repository
+1. check the current setting:
+kubectl describe cm kubeadm-config -n kube-system
+2. check the change the imageRepository: k8s.gcr.io, to a workable image repository
+3. you can save the file in yaml format by:
+kubectl get cm kubeadm-config -n kube-system -o yaml > kubeadmin-config.yaml
+4. then edit and re-apply the yaml
+-- now start the kubeadm
+kubeadm init
+
+It will now show the command for other node to join the cluster.
+
+--- run command to get the tokens
+kubeadm token list
+
+
+-- print the join command
+kubeadm token create --print-join-command
+
+-- or if you want to do the detail work, first:
+1. get the discovery token ca-cert hash string
+openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'
+2. then issue the join command as:
+kubeadm join --discovery-t0ken <token-name from token list command> --discovery-token-ca-cert-hash sha256:<the hash string>
+
+-- alternatively, you can join by using the following command, if the token doesn't have CA pinned
+kubeadm <endpoint url> --token <the token from the kubeadm token list> --discovery-token-unsafe-skip-ca-verification
+
+-- install the same docker images on each node. 
+
+-- once you got the token, you should also get the endpoint of the master. you then join to the master from the working node
+kubeadm join 
+
+-- reset the environment , this can be done when the environment is having problem, and can't successfully init.
+kubeadm reset
+
+-- set up the Kubernetes environment
+export KUBECONFIG=/etc/kubernetes/admin.conf
+
+-- troubleshooting
+1. show status of the system pods
+kubectl get pods -n kube-system -o wide
+-- if any of the pods status isn't in Running status, then you can check the error by
+
+2. show pod error status
+kubectl describe pod <the node name> -n kube-system
+
+3. show logs of the pod
+kubectl logs <pod name> -n kube-system
+
+4. show system journals with the kubernetes
+journalctl -f -u kubelet
+this will use tailed format of the logs to kubelet (like tail -f)
+-f: follow, follow the latest journal
+-n: show n lines
+-u: show only logs for a service
+--since: "yyyy-mm-dd hh:MM:ss" --until ""
+--since 1 hour ago
+
+4. after fixed the problems
+systemctl daemon-reload
+systemctl restart docker
+systemctl restart kubelet (or systemctl restart kubelet.service)
+systemctl status kubelet
+
+-- set container/pod security context
+kubectl run <pod-name> --image=<image> --dry-run=client -o yaml 
+then change the yaml file and add the securityContext section in spec
+securityContext:
+  runAsUser: <userid>
+  fsGroup: <groupid>
+
+-- scheduling
+1. mark the node unschedulable
+kubectl cordon <nodename>
+kubelctl drain <nodename> --force --ignore-daemonsets   --- this will force the pods/workload to be evicated from the node
+2. mark the node scheduleable again
+kubectl uncordon <nodename>
+3. Add taint infor for node to unschedulable for certain attributes
+kubectl taint node <nodename> key=value:effect -- this will make the node unschedule only if the pod has the explicit tolerance
+--effect here can be: NoSchedule, PreferNoSchedule, NoExecute
+kubectl taint node <nodename> key:effect -- this will add a taint with no value. 
+
+currently taint can only apply to Node 
+
+4. Remove the taint
+kubectl taint node <nodename> key:effect-  -- this will clear the taint (the key and the effect), and the node will be schedule for all workloads
+kubectl taint node <nodename> key-  --- this will clear all taint with the key. 
+
+5. Create tolerance, a tolerance will all a tainted node to accept a workload
+add a tolerations section in spec:
+spec:
+  tolerations:
+  - key: "taint-key"
+    operator: "Equal" or "Exist"
+    value: "taint-key value"
+    effect: "NoSchedule" | "PreferNoSchedule" | "NoExecute"
+
+--- change the image repository
+1. create the secret to the docker
+kubectl create secret docker-registry mydocker --docker-server=<docker repository> --docker-username=youname --docker-passord=<pwd>
+2. verify the secret
+kubectl get secrets mydocker
+3. add the secret to the service account
+kubectl patch serviceaccount default -p '{"imagePullSecrets": [{"name": "myregistrykey"}]}'
+4. you can export the yaml by
+kubectl get serviceaccounts default -o yaml > sa.yaml
+then edit with the imagePullSecrets and the name of the secret.
+5. apply the yaml by replacing It
+kubectl replace serviceaccount default -f sa.yaml
+6. verify the effectiveness
+kubectl run <image> --image=<image> --restart=Never
+kubectl get pod <image> -o=jsonpath='{.spec.imagePullSecrets[0].name}{"\n"}'
+
+--alternatively, you can use your existing docker login credential
+1. log into docker
+docker login
+2. check the config.json file
+cat ~/.docker/config.json
+3. create a secret based on existing docker credential
+kubectl create secret generic dockerregistry --from-file=.dockerconfigjson=<path/to/.docker/config.json> --type=kubernetes.io/dockerconfigjson
+kubectl get secret dockerregistry --output yaml
+
+--install network plugin
+using Calico 
+1. on the master node, apply the calico manifest. 
+curl -LO https://docs.projectcalico.org/v3.20/manifests/calico.yaml
+or if you want to use the latest version, you can do:
+curl -LO https://docs.projectcalico.org/manifests/calico.yaml
+
+2. check the file to ensure the images referred doesn't source k8s.gcr.io
+grep image ./calico.yaml
+3. apply the file
+kubectl apply -f ./calico.yaml
+4. watch and ensure the installation successfully
+watch kubectl get pods --all-namespaces
+
+-- check and change the CIDR of the cluster:
+the CIDR setting for service, cluster, pods can be set as a parameter to the kube-controller-manager, which is part of the 
+/etc/kubernetes/manifests/kube-controller-manager.yaml
+
+-- to expand or change the IP pool for various usage, you can use calicoctl command to do so.
+
+--install nginx ngress controller 
+1. download the deployment file:
+curl -LO https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.1.0/deploy/static/provider/baremetal/deploy.yaml
+2. check the docker images used:
+grep image ./deploy.yaml
+3. change the images from k8s.gcr.io to docker hub, you need to first search from hub.docker.com, and the replace the image.
+4. after that, you then reapply the deployment.
+kubectl apply -f ./deploy.yaml
+5. watch the status
+watch kubectl get pods --all-namespaces
+it will take sometime to have all the pods Running
+
+--check the log errors from various places
+1. from the system journal
+journalctl -f -u kubelet --- this will produce a log stream containing the kubelet service
+2. check the pod related messages
+kubectl describe -n namespace pod <pod-id>
+3. check the contain related messages
+3.1 first list out the containers(container ID) inside the pod
+docker ps -a -f name=<pod-name> --format={{.ID}}
+3.2 then check the docker log
+docker logs <container id>
+
+Expose services from pods or other resources
+kubectl expose pod <pode-name> --name=<svc-name> --type=NodePort --port=<port on cluster> --target-port=<port on the pod>
+
+Commands:
+create role and rolebinding
+1. kubectl create ns ns-app1
+2. kubectl create serviceaccount sa-name -n ns-app1 
+3. kubectl create clusterrole deployment-cr -verb=create --resource=deployment,statefulset,daemonset
+4. kubectl -n ns-app1 create rolebinding <rolebinding-name> --clusterrole=<deployment-rc> --serviceaccount=<ns-app1:sa-name>
+
+manage node availabilty
+1. kubectl cordon <node-name> //this make the node unscheduleable
+2. kubectl drain <node-name> --ignore-daemonsets --delete-local-data --force //this drain the workloads off the node
+3. kubectl uncordon <node-name>
+
+upgrade kubeadm
+-on master node
+1. kubectl cordon <master-node>
+2. kubectl drain <master-node> --ignore-daemonsets
+3. apt-mark unhold kubeadm kubectl kubelet
+4. apt-get update && apt-get install -y kubeadm=1.20.1-00 kubelet=1.20.1-00 kubectl=1.20.1-00
+5. apt-mark hold kubeadm kubelet kubectl
+6. systemctl restart kubelet
+7. kubeadm upgrade plan
+8. kubeadm upgrade apply v1.20.1 --etcd-upgrade=false
+optionally
+9. kubectl rollout undo deployment coredns -n kube-system
+10. kubectl uncordon <master-node>
+11. kubectl get node
+upgrade worker node
+-on master node
+1. cordon the worker node
+2. drain the worker node (--ignore-daemonsets)
+
+-on worker node
+1. apt-get unmark kubeadm kubelet
+2. apt-get update
+3. apt-get install kubeadm=1.20.1-00
+4. kubeadm upgrade node //<for node, should use "node" instead of "plan" on master>
+5. apt-get install kubelet=1.20.1-00
+6. systemctl restart kubelet
+-on master node
+7. kubectl uncordon <worknode>
+8. kubectl get node
+
+backup and restore etcd
+-- check the file location
+on the master node
+1. ps -aux | grep apiserver
+this will print out the etcdca file, client key file, client cert file to be used calling to etcdctl, as well as the etcd server's endpoint (the port)
+
+or 
+1.1 lsof -i :2379 (this is the default port of etcd server), or fuser 2379/tcp, or netstat -lptn | grep 2379
+1.2 with the process ID, you then: ps -aux | grep <processid>, it will show the full startup command for the process
+1.3 from there you can find out the location of: the cert of the server, the peer cert etc.
+1.4 however, you can NOT find the needed etcd client certs ... which is only used in the apiserver
+
+2. ETCDCTL_API=3 etcdctl --endpoints <the etcd endpoint> --cacert=<path to the ca cert of the etcd> --cert=<etcd client's cert file> --key=<etcd client's key file> snapshot save <the path of the backup>
+3. you then check the saved file path
+
+- check the kubelet information
+1. ps -aux | grep kubelet
+this will give information like the 
+/usr/bin/kubelet \
+  --bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf 
+  --kubeconfig=/etc/kubernetes/kubelet.conf 
+  --config=/var/lib/kubelet/config.yaml 
+  --network-plugin=cni 
+  --pod-infra-container-image=k8s.gcr.io/pause:3.6
+2. check the static Pod install location
+cat /var/lib/kubelet/config.yaml | grep staticPod
+3. Then place a pod yaml file will create a static Pod on that particular node.
+
+Create User and the configuration:
+a> create certificate signing request
+1. get the CSR file which is submitted from client
+openssl genrsa -out myuser.key 2048 -- this will generate the client key file
+openssl req -new -key myuser.key -out myuser.csr -- this will generate the CSR file using the client key file
+2. generate the base64 string for the csr. 
+cat myuser.csr | base64 | tr -d "\n" -- this will convert the csr into a single line request string to use in the K8S CSR yaml file.
+3. create the CertificateSigningRequest with a yaml file
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata:
+  name: myuser
+spec:
+  request: 
+  signerName: kubernetes.io/kube-apiserver-client
+  expirationSeconds: 86400  # one day
+  usages:
+  - client auth
+4. apply the CSR in kubernetes cluster
+kubectl apply -f <CSR yaml file>
+5. you can then check the CSR by:
+kubectl get csr -- the status should be pending.
+6. approve the CSR
+kubectl certificate approve <the CSR name in the yaml>
+7. Get the Certificate from the approved CSR
+kubectl get csr/myuser -o yaml -- the cert is in the yaml of the file {status.certificate}
+kubectl get csr/myuser -o jsonpath='{.status.certificate}' | base64 -d > myuser.crt 
+--- the cert file should be return to the applicant (myuser)
+
+Create the role and the role-binding
+8. kubectl create role developer --verb=create --verb=get --verb=list --verb=update --verb=delete --resource=pods
+9. kubectl create rolebinding developer-binding-myuser --role=developer --user=myuser
+
+Add the user to kubeconfig (it's usually /etc/kubernetes/admin.conf)
+10. kubectl config set-credentials myuser --client-key=myuser.key --client-certificate=myuser.crt --embed-certs=true
+-- the command will set the credentials for the user to the kubeconfig file and embedding the key and certificate.
+Add the context to the cluster
+11. kubectl config set-context myuser --cluster=kubernetes --user=myuser
+Switch to the new context
+12. kubectl config use-context myuser
+13. kubectl config current-context -- this will print the current context
+14. kubectl config get-contexts -- this will print all the contexts, active one will be marked with *
+-- check user auth
+1. kubectl auth can-i <verb> <resource> 
+kubectl auth can-i list pod 
+kubectl auth can-i list pod --as <different user>
+
+-- interactive with container
+1. copy files and dirs to/from pod
+kubectl cp <file-spec-src in the OS> <some-pod>:<dir> -- this copy files to a directory in the remote pod in default ns
+2. copy files and dirs to/from container
+kubectl cp <file/dir in OS> <somepod>:<dir> -c <container id> 
+kubectl cp <namespace>/<pod-name>:<dir> <local-path>  --- here the namespace is a must
+3. execute a command in the container
+kubectl exec -it podname -- <command> 
+can also specify a container to run the command with by -c 
+-i to pass local stdin to container
+-t tell container that the stdin is a local TTY
+4. check logs from pod or a resource (if a pod only has one container, then the -c is optional)
+kubectl logs -f -p <Pod or resource> -c <container>
+5. docker ps -a -f name=<pod-name> --format={{.ID}}
+6. docker logs <container id>
+
+Kubernetes Reference Documentation:
+https://kubernetes.io/docs/reference
+
+Network policy
+- check the current network provider support the feature
+
+-- a sample yaml file
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-network-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      role: db
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - ipBlock:
+        cidr: 172.17.0.0/16
+        except:
+        - 172.17.1.0/24
+    - namespaceSelector:
+        matchLabels:
+          project: myproject
+    - podSelector:
+        matchLabels:
+          role: frontend
+    ports:
+    - protocol: TCP
+      port: 6379
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 10.0.0.0/24
+    ports:
+    - protocol: TCP
+      port: 5978
+
+-- another one will deny all ingress traffic
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+
+-- one will allow all ingress traffic
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - {}
+
+-- one will allow all egress traffic
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - {}
+
+-- one will deny all egress traffic
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+
+-- one will deny all egress and ingress traffic
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  - Ingress
+
