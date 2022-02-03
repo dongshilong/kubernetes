@@ -14,6 +14,390 @@ apt-get install -y docker
 
 sudo apt-get install -y apt-transport-https ca-certificates curl
 
+-- check the current config file content.
+-- including clusters, contexts, users, current context, preferences etc. 
+kubectl config view 
+
+-- cluster management, cluster is a combination of control plane and a set of working node, plus the etcd for parameter storage
+1. check cluster information
+kubectl config set <key=value> -- set individual key value
+kubectl config get-clusters
+kubectl config set-cluster --add a new cluster in kubeconfig
+kubectl config delete-cluster <cluster>
+
+-- context management, context is setup of default cluster, user, and namespace when no specific set
+kubectl config current-context --- display current context
+kubectl config get-contexts
+kubectl config use-context <context>
+kubectl config set-context  --- add a new context
+kubectl config delete-context <context> -- delete a context
+
+-- User management
+kubectl config get-users
+kubectl config set-credentials <add a new user>
+kubectl config delete-user <user>
+
+-- create deployment
+kubectl create deployment <dep-name> --image=<image id>
+-- get the deployment
+kubectl get deployments.apps
+kubectl get pod
+kubectl describe deployments.apps <dep-name> -- you'll find out the container name
+
+-- upgrade the deployment image
+kubectl set image <dep-name> <container-name>=<new image id> --record
+kubectl describe deployments.apps <dep-name> | grep -i | image
+
+-- upgrade the kubeadm/kubelet for master and worker nodes
+1. From master
+1.0 check current version
+kubeadm version
+1.1 check the available version, also include the current version
+kubeadm upgrade plan --- this will print out the available version of kubeadm and kubelet, this can only run on master
+1.2 upgrade the executable (kubeadm and kubelet)
+apt update
+apt-mark unhold kubeadm, kubelet
+apt install kubeadm=<version> // pls note the version structure: <major>.<minor>.<revision>-<build number: 00>
+1.3 apply the upgrade change
+-- download the corresponding docker images for the version and label it accordingly.
+as folllowing instruction. 
+-- apply the version.
+kubeadm upgrade apply v<version number> --- please note, this version doesn't include build number (-xx)
+--- this will download the required docker images from gcr.io, which doesn't work in China without a VPN, so need to be carefule
+1.4 upgrade the CNI plugin when necessary
+2. From other control nodes
+<download and upgrade the executable>
+kubeadm upgrade plan -- check the upgrade availabilty
+kubeadm upgrade node --- no need to provide the version, instead of kubeadm upgrade apply
+3. Drain the workload from master nodes
+kubectl drain <node to drain > --ignore-daemonsets
+4. upgrade the kubelet & kubectl version
+apt-mark unhold kubelet && apt-get upgrade && apt-get install -y kubelet=<version-00> && apt-mark hold kubelet
+apt-mark unhold kubectl && apt-get upgrade && apt-get install -y kubectl=<version-00> && apt-mark hold kubectl
+systemctl daemon-reload
+systemctl restart kubelet
+5. Uncordon the workload
+kubectl uncordon <node-to-drain>
+
+--For work nodes
+1.upgrade the kubeadm executable
+apt-mark unhold kubeamd && apt-get update && apt-get install -y kubeadm=<version-xx> && apt-mark hold kubeadm
+2. upgrade the node
+kubeadm upgrade node
+3. drain the node 
+from master
+kubectl drain <node to drain>
+4. upgrade the kubelet
+apt-mark unhold kubelet && apt-get update && apt-get install -y kubelet=<version-xx> && apt-mark hold kubelet
+5. reload the services
+systemctl daemon-reload
+systecmtl restart kubelet
+6. uncordon the node
+from master
+kubectl uncordon <node to drain>
+
+verify the status
+from master
+kubectl get nodes
+
+Static Pod - static pod will be tied to a specific node, and will NOT be managed by the apiserver
+- static pod will automatically restart when kubelet restart
+two ways to run static pod
+- Filesystem-hosted solution:
+kubelet will load yaml files (manefist) from a folder in filesystem in the config file or the manifest path
+there are two options for this:
+1. by setting in kubelet config file: usually /var/lib/kubelet/config.yaml, then staticPodPath: 
+--- the config file is specified in the kubelet command --config, or through
+1.1 to identify the config file path, using
+ps -aux | grep kubelet, and then find out the path of the --config
+1.2 then grep the path by:
+cat <config file path from above> | grep -i static
+1.3 then create the manifest file to the folder
+2. by setting a pod-manifest-path to kubelet. this is not included by default, so if you want to change, need to restart kubelet on the node
+--- set the kubelet with --pod-manifest-path parameter
+- Web-hosted static pod manifest
+kubelet will periodically scan the URL to pick up the manifests from the url. this is done by specify a url to kubelet command
+kubelet --manifest-url=<url>
+
+ETCD cluster management
+- Run a single-node cluster
+etcd --listen-client-urls=http://<private-ip>:2379 --advertise-client-urls=http://<private-ip>:2379
+--- then run the APIServer with --etcd-servers=<private-ip>:2379
+
+- Run a multi-nodes cluster
+etcd --listen-client-urls=http://<ip1>:2379,http://<ip2>:2379 --advertise-client-urls=http:<ip1>:2379,http:<ip2>:2379
+--- then run the APIServer with --etcd-servers=<ip1>:2379,<ip2>:2379
+
+- Run a multi-node cluster with Load-balancer
+run the etcd with all the IPs behind the load-balancer
+APIServer --listen-client-urls=<lb-ip>:2379
+
+- Secure the ETCD
+this includes two parts:
+1. peer comms - between ETCD members
+1.1 specify --peer-key-file=<peer.key>, --peer-cert-file=<peer.cert> and use HTTPS as comms protocol
+2. client comms - between ETCD and the clients (API server in this case, or etcdctl in some case)
+3. set trusted CA for client access
+--client-cert-auth=<true/false>, this will force the ETCD cluster verify client using system CA or CA passed by trusted-ca-file
+--trusted-ca-file=<CA file which signes the client cert>
+
+find out the secure information:
+1. findout the etcd pod by:
+kubectl get pods -n kube-system
+2. describe the pod by:
+kubectl describe pod/<etc pod>
+3. find out the cert/key and trust ca file as well as the end-points
+4. then operate with etcdctl by:
+ETCDCTL_API=3 etcdctl --endpoints=<one from listen-client-urls> --cacert=<trusted-ca-file> --cert=<cert-file> --key=<key file> snapshot save <filename>
+ETCDCTL_API=3 etcdctl --endpoints=<one from listen-client-urls> --cacert=<trusted-ca-file> --cert=<cert-file> --key=<key file> restore <filename>
+
+Delete resource
+kubectl delete pod, service <names> --grace-period=<seconds, -1, 0, 1 (immediate)>, --force (grace-period need to 0)
+
+service
+1. create service by expose
+1.1 kubectl run pod-web --image=nginx
+1.2 kubectl expose pod pod-web --name=web-pod-svc --port=80 --- this will create a svc of default clusterIP type.
+1.3 lookup service
+--- kubectl exec -it <pod-name> -- nslookup <svc-name> ---- this will lookup by service name
+--- kubectl exec -it <pod-name> -- nslookup <svc-end-point-ip, and replace . by ->.default.pod ---- this will lookup the default pod
+you can find out the IP address by kubectl get pod -o wide
+you can't directly ping to a pod, you have to ping the ip, or the service wrapping the pod. 
+
+1.4 check dns status
+--- install dnsutil jessie-dnsutils
+first install the docker image, as I'm installing from docker hub, so I need to change the image setting below
+then apply the dnsutil pod by 
+
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dnsutils
+  namespace: default
+spec:
+  containers:
+  - name: dnsutils
+    image: claudiubelu/jessie-dnsutils:1.3
+    command:
+      - sleep
+      - "3600"
+    imagePullPolicy: IfNotPresent
+  restartPolicy: Always
+
+then can run the nslookup using the newly created pod
+-- kubectl exec -it dnsutils -- nslookup svc-name
+-- kubectl exec -it dnsutils -- nslookup kubernetes.default  --- this should always work
+can also print the local dns setting by dump the local names resolution:
+-- kubectl exec -it dnsutils -- cat /etc/resolv.conf
+check if DNS pod is running
+-- kubectl get pods -n kube-system -l k8s-app=kube-dns
+check for DNS logs
+-- kubectl logs -n kube-system -l k8s-app=kube-dns
+
+storage
+- pv, two ways of provisions of pv
+1. static
+-- the yaml file:
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv0003
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteMany
+  hostpath:
+    path: /root/k8s/pv
+
+a storageClassName is used to bind the PV to a class, which will later be used by PVC for PV provision. 
+a PV without a class can only be used to bind PV to a PVC without class associated, or the dyanamic provision is disabled
+
+the persistent volume claim 
+
+--yaml file
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: 
+  name: my-PVC
+spec:
+  storageClassName: manual -- align with previous setting
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 3Gi
+
+apply the PV or PVC in pod
+add a volumes section to specs of the pod
+
+volumes:
+- name: <volume name>
+  persistentVolumeClaim:
+    claimName: <the PVC name> 
+
+then in the container's section, add volumeMounts section:
+volumeMounts:
+- name: <volume name defined in volumes>
+  mountPath: <the path in the container>
+  subPath: <subpath in local, if the same volume are to be used in multiple volumeMount>
+
+2. dynamic
+- dynamic provision is provided through PVC with a storage class (storageClassName), when a PVC doesn't have storage class, 
+dynamic provision is disabled. 
+- To enable, cluster admin need to enable DefaultStorageClass admission controller on API Server. 
+--- --enable-admission-plugins 
+
+- Create pod with replicas, use deployment than directly run command
+kubectl create deployment <dept-name> --image=<imageid> --replica=3
+kubectl run <pod-name> --image=<imageid> --- this will create a pod with only one replica
+kubectl get deployments.apps --- will get the apps.
+kubectl get pods --- this will get the pods
+
+- scheduling
+1. drain command with kubectl drain <node> --ignore-daemonsets --- this will drain workload off the node, and the node will become unscheduleable
+2. uncordon the node kubectl uncordon <node> --- this will make the node schedulable again
+3. tain the node with NoSchedule, the node will be unschedule for workload without appropriate toleranace. 
+-- kubectl taint <node> <key>=<value>:NoScheule/PreferNoSchedule/NoExecute
+4. Tolerate the node for scheduling
+-- add "tolerations" secion to the spec, with key, oprator, value, and effect
+
+debug:
+1. kubectl describe pod/svc/deployment/... 
+2. kubectl logs pod/pod-name
+3. systemctl status kubelet
+4. journalctl -f -t kubelet
+
+CSR
+1. the CSR yaml
+apiVersion: v1
+kind: CertificateSigningRequest
+metadata:
+  name: myuser-csr
+spec:
+  request: <the request >
+  signerName: kubernetes.io/kube-apiserver-client
+  experirationSeconds: 86400 # one day
+  usages:
+  - client auth
+2. request is the base64 string of the csr. 
+cat myuser.csr | base64 | tr -d "\n"
+3. approve the CSR
+kubectl certificate approve <my-csr>
+4. get/retrieve the cert from the approved CSR - it's a base64-encoded in the .status.certificate field:
+kubetl get csr/my-csr -o jsonpath='{.status.certificate}' | base64 -d > myuser.crt 
+
+User:
+1. create user with cert/key:
+kubectl config set-credentials --client-certificate=<cert-file> --client-key=<key-file>
+2. create user with bearer token flags:
+kubectl config set-credentials --token=<bearer-token>
+3. create user with basic auth flags:
+kubectl config set-credentials --username=<user-name> --password=<password>
+4. using an external auth provider:
+kubectl config set-credentials cluster-admin --auth-provider=<gcp, aws etc>
+5. Enable OpenID connect auth provider for cluster-admin, usually the service will provide openid, clientid, client-secret, refresh-token
+kubectl config set-credentials cluster-admin \
+  --auth-provider=oidc 
+  --auth-provider-arg=issuer-url=<issurer-url> \
+  --auth-provider-arg=client-id=<client-id> \
+  --auth-provider-arg=id-token=<id_token> \
+  --auth-provider-arg=client-secret=<client secret> \
+  --auth-provider-arg=refresh-token=<refresh token> \
+  --auth-provider-arg=idp-certificate-authority=<path to the CA cert>
+6. Using --token option:
+kubectl --token=<bearer token> commands
+7. Using WebHook Token Authentication
+webhook auth is a hook for verifying bearer tokens
+
+scheduling
+- kubectl cordon node-name -- if you want to drain a node, need to first make it unschedulable
+kubectl cordon <node0name>
+- drain the pods from the node --- need to ignore daemonsets, and clean the local data and force
+kubectl drain <node> --ignore-daemonsets --delete-local-data --force
+- need to check node
+kubectl get nodes
+- uncordon the node
+kubectl uncordon <node-name>
+then get the nodes
+
+upgrade the kubeadm
+1. kubectl get nodes
+2. kubectl cordon <master-node>
+3. kubectl drain <master-node> --ignore-daemonsets --force
+4. apt-mark unhold kubeadm kubelet kubectl
+5. apt-get update & apt-get install -y kubeadm=1.20.1-00 kubelet=1.20.1-00 kubectl=1.20.1-00
+6. apt-mark hold kubeadm kubectl kubelet
+7. kubeadm upgrade plan
+8. kubeadm upgrade apply <v1.20.1> --etcd-upgrade=false
+9. systemctl restart kubelet, systemctl daemon-reload
+10. kubectl uncordon <master-node>
+
+Network policy
+apiVersion: v1
+metadata:
+  name: policy name
+spec:
+- application scope:
+  podSelector - select a group of pods to apply the policy.
+- policyTypes - Ingress or Egress or both. 
+  policyTypes:
+  - Ingress and/or
+  - Egress
+- ingress - define the rules that will apply to the incoming traffic of the selected pods. 
+  - from: -- can have multiple from, each represent a rule
+          -- each rule include:
+          ---- ipBlock: (the cidr), this is external-cluster IP range. 
+          ---- podSelector: (matchLabels)
+          ---- nameSpaceSelector: (matchLabels)
+          ---- or combined:
+               -namespaceSelector: 
+                podSelector:
+          ---- ports: (the type(UDP/TCP), the port, is an array)
+               - protocol: TCP/UDP
+                 port: the port or starting port
+                 endPod: the end port of the range. 
+               - protocol: TCP/UDP
+                 port: 
+  
+- egress - defined the rules that will apply to the outbound traffic of the selected pods. 
+  an array of rules that will apply to the traffic going out of the pods. it includes the following fields:
+  - ports: an array (port, endport, and protocol)
+  - to: include --- can have multiple -to. 
+        - ipBlock (the cidr)
+  - podSelector: apply to the pod in this namespace as this network policy. 
+     matchLabels: 
+        <labels>
+  - namespaceSelector: namespace selector apply to All namespaces in the cluster 
+     matchLabels: 
+        <labels>
+  - podSelector and namespaceSelector can join together by: 
+  -namespaceSelector -- namespaceSelector first then podSelector 
+   podSelector
+   -- this will select pods with label from the selected namespaces. 
+
+  please note: all namespace has a default label is: name: the-name. 
+
+kubectl label <pod/pod-name> label-key=value --- this will add a new label
+kubectl label pod/pod-name label-key-  --- this will delete a label
+
+This can used to test the network policy - by using busybox. 
+create a pod and with an TTY, which will automatically delete the pod after exit. 
+kubectl run busybox --rm -ti --image:ubuntu -- /bin/sh
+kubectl run busybox --rm -ti --image:ubuntu -n test --labels label=value,label2=value -- /bin/sh
+
+Run a pod and also expose it as a service
+kubectl run nginx --image:nginx --expose --port 80 -n namespace-test --labels label1=val,label2=val
+
+make sure you check the indicated context from the exam, and change it as requested. 
+
+Performance:
+kubectl top node|pod -l|--selector <label> -A|--all-namespaces --sort-by=[cpu|memory]
+kubectl top 
+
 -- set the image repository to aliyun mirror
 sudo curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://mirrors.aliyun.com/kubernetes/apt/doc/apt-key.gpg
 apt-key add /usr/share/keyrings/kubernetes-archive-keyring.gpg
@@ -23,7 +407,13 @@ apt-get update
 
 -- install the kubeadm and kubelet and kubectl
 sudo apt-get install -y kubelet kubeadm kubectl
+or sudo apt install kubelet=<version>
+-- get installed packages
+apt list --installed | grep <packge-name>
+-- hold package from update
 sudo apt-mark hold kubelet kubeadm kubectl
+-- apt update, --- update the available packages
+
 
 --- set the CGroup Driver
 sudo mkdir /etc/docker
@@ -404,6 +794,7 @@ spec:
     - namespaceSelector:
         matchLabels:
           project: myproject
+          ns: ns-target
     - podSelector:
         matchLabels:
           role: frontend
@@ -500,7 +891,7 @@ ubuntu-target -- ubuntu-app1 -- ubuntu-app2 --
 kubectl -n ns-target create deployment ubuntu-target --image=ubuntu:20.04 -- sleep infinity
 
 Get svc and endpoints (ep):
-
+kubectl -n ns-target get services
 nginx-target -- nginx-app1 -- nginx-app2 --
 在 3 个 ubuntu 中分别起 81 端口，python3 -m http.server 81 &
 kubectl -n ns-target expose deployment nginx-target --name=svc- nginx-target --port=80

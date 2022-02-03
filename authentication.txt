@@ -1,0 +1,65 @@
+Kubernetes Authentication Strategies:
+API Request Authentication:
+1. client certificate
+2. Bearer token
+3. authenticating Proxy
+4. webhook
+5. Impersonation
+
+When multiple authentication methods are enabled, the first module authenticated the request short-circuits the evaluation. 
+Integration with other auth protocols(LDAP, SAML, Kerberos, x509 etc) can be accomplished using auth proxy and webhook
+- x509 client certs
+API server started with --client-ca-file=<some-file> option, the file contains one or more cert authorities to validate client cert
+If cert is validated, then the CN (Common Name) of the subject is used as User Name for the request. 
+
+- Static Token file
+API Server start with --token-auth-file=<some-file> option, currently the token last indenfinitely. Token list can't 
+be loaded dynamically, i.e. need to restart the API Server to load token changes. The token file is a csv file with
+minimal 3 columns: token, user name, user uid, followed by optional group names. If more than 1 group included, need to quote "" the group names
+
+the client can then request with bearer token in the HTTP header as:
+Authorization: Bearer <bearer token>
+
+Bootstrap tokens
+ Bootstraping tokens are used to bootstraping the cluster(new cluster). Theese tokens are stored as 
+ secrets in kube-system namespace. Theese tokens are used with --enable-bootstrap-token-auth flag on API Server
+ kubeadm will use them to bootstrap a cluster. 
+Service Account tokens
+- a SA ccount is an automatically enabled authenticator that uses signed bearer tokens to verify requests. 
+  the plugin takes two optional flags:
+  --service-account-key-file=<key-file>, a file containing a PEM encoded key for signing bearer tokens. 
+  --service-account-lookup, if enabled, tokens which are deleted from the API will be revoked. 
+
+RBAC - Role Based Access Control
+- 4 objects:
+-- Role, sets permissions within a namespace scope. 
+-- clusterrole, a set of permissions across the cluster - and non-namespace scoped. 
+-- rolebinding, a binding grants pmissions defined in role or clusterrole to a user or a set of users. 
+    rolebinding grants permission to a role in its namepace while clusterrolebinding grant cluster wide access. 
+-- ClusterRoleBinding
+--- Role+RoleBinding = Same Namespaces
+--- ClusterRole + RoleBinding = Particular Namespaces
+--- ClusterRole + ClusterRoleBinding = All Namespaces
+- Subject:
+- The user(normal user or service account), the group. 
+
+Service Account
+- A service account provides an identity for processes that run in a Pod
+  Service account are used by applications/processes to authenticate as they talk to the APIServer
+- Every namespace has a default service account, POD without a specific SA will use the default service account
+  though it has very few permissions. 
+- Every SA has the embeded token that used to authenticate your 3rd-party apps to Kubernetes apiserver.
+- SA is used with In-Cluster or Third-party Apps. 
+Service Account permissions can be restricted by RBAC.
+1. create role 
+kubectl create role <role-name> --verb=<verb,verb> --resource=<resource, resource>
+2. create rolebinding
+kubectl create rolebinding <role-binding-name> --role=<role-name> --user=user1 --user=user2 --group=group1
+kubectl create rolebinding <role-binding-name> --clusterrole=<cluster-role-name> --namespace=<ns> --user=user1 --serviceaccount=<ns:sa-name>
+same cluster role can bind to multiple namespaces.  
+kubectl create rolebinding <role-binding-name> --clusterrole=<cluster-role-name> --namespace=<ns> --user=user1 --serviceaccount=<ns:sa-name>
+3. create clusterrole - create a cluster wide role
+kubectl create clusterrole <cluster-role-name> --verb=<verb,verb> --resource=<resource, resource>
+4. create clusterrolebinding, bind a cluster role to the cluster subject. 
+kubectl create clusterrolebinding <name> -clusterrole=<cluster-role-name> --user=user1 --serviceaccount=<ns:sa-name>
+

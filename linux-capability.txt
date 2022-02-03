@@ -1,0 +1,27 @@
+Normally Linux has two type of user:
+- root user (uid: 0), most of the restrictions are skipped.
+- normal user has some restriction
+In order for normal user get privileges, we usually need to either run the process in root or setuid. 
+setuid feature
+- Binaries with the setuid bit enabled, are being executed as if they were running under the context of root user. 
+- This enables normal (non-privilegesd) user to use special privileges. 
+Linux Capability provide a subset of available root privileges to a process. 
+This way, we don't need to grant root or setuid
+
+Check Available Capabilities
+1. Number of available Capabilities
+cat /proc/sys/kernel/cap_last_cap
+2. List of available Capabilities
+capsh --print
+3. Get process's Capability
+cat /proc/<pid>/status | grep Cap
+-- CapInh: Inherited capability
+-- CapPrm: Permitted
+-- CapEff: Effective
+-- CapBnd: Bounding set
+-- CapAmb: Ambient capabilities set
+capsh --decode=<hex-numbers>
+another way to get the capabilities is using getpcaps
+getpcaps <pid>
+4. Drop capabilities
+capsh --drop=<capabilities>

@@ -1,0 +1,13 @@
+SSL/TLS Purpose:
+- webserver secured by TLS/SSL certificate use used to both protect the user information during transfer, 
+- and also to authenticate the webserver's org identity to ensure users are interacting with a legimate website owner. 
+- SSL: Secured Socket Layer: the technology to secure Internet connection by encrypting data sent between server and browser. 
+- TLS: Transport Layer Security: TLS is an updated and more secure version of SSL, it's still commonly called SSL
+Handshake flow:
+1. Browser and Server build connection
+2. Server share TLS/SSL certificate and the public key to client to establish secure connection
+3. Browser confirm the CA (certificate authority) of the SSL/TLS certificate.  (Authentication)
+4. Browser send a symmetic session key (also called as pre-master key) and encrypt it with the public key
+5. Server decrypt the session key (pre-master key) using its private key. 
+6. Server and Browser will then use the decrypted key for sysmmetic encrypted data transfer and decryption. 
+7. TLS/SSL ensure the content can't be altered by adding a MAC (message authentication code) with each transmission.

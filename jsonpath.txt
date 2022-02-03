@@ -1,0 +1,14 @@
+syntax of jsonpath
+.projerty or ['property']
+[n], return the 'n-1'-th property
+..property, search property recursively. return a list
+*, wildcast for object or array. object.*, return all object properties, [*], return all elment of array.
+[start:end] select elemet from start to end (0-based index)
+[start:] select from start till the end of the array
+[:n] return the first n element of an array
+[-n:] return the last n element of an array
+[?(expression)]: filter expression. return a list
+[(expression)], eg: [(@.length - 1)], return the last element 
+
+{range .items[*]}{filter express}{""}{"\n"}{end}
+{range .array[* or range]} ... {end}
