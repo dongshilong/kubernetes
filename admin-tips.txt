@@ -238,12 +238,17 @@ volumes:
 - name: <volume name>
   persistentVolumeClaim:
     claimName: <the PVC name> 
+- name: configmap
+  configMap:
+     name: configMap-name
 
 then in the container's section, add volumeMounts section:
 volumeMounts:
 - name: <volume name defined in volumes>
   mountPath: <the path in the container>
   subPath: <subpath in local, if the same volume are to be used in multiple volumeMount>
+
+you can also create a volume with configMap, which will map a configMap to a file. 
 
 2. dynamic
 - dynamic provision is provided through PVC with a storage class (storageClassName), when a PVC doesn't have storage class, 
