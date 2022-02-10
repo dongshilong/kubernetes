@@ -1,0 +1,124 @@
+ingress controller - 
+-- need to install: Nginx Ingress Controller from F5 and Kubernetes.
+- Using the one from Kubernetes:
+1. clone the git:
+git clone https://github.com/kubernetes/ingress-nginx.git
+2. deploy the mandatory resources:
+kubectl apply -f ./deploy/static/provider/baremetal/deploy.yaml
+-- to make it work in China, you can change the k8s.io/kubernetes/* to the equivalent in docker.io. 
+3. check if it is running:
+kubectl get pod -n ingress-nginx
+<all pods should be running, at least the controller pod>
+4. you then run the test:
+-- deploy the service. 
+5. deploy the ingress:
+kubectl create ingress demo-ing --class=nginx --rule=demo.localdev.me/demo=<svc>:<svc-port>
+6. to test the service, we need to port-forward the access to certain port to ingress-controller service. 
+kubectl port-forward svc/ingress-nginx-controller 8080:80, or if the port has named, can also do by: 
+kubectl port-forward svc/ingress-nginx-controller 8080:http
+-- after the port-forward, the traffice to localhost 8080 and local IP will be redirected to the ingress-nginx service
+-- so the ingress rules will take effect. 
+-- in real environment, you'll have the nginx-ingress' external IP being created, and you then config the DNS point to the ingress. 
+
+7. nginx container will by default use 80 port, and can't be changed, but we can change it with a different one by mount a configMap
+- the configmap: 
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  creationTimestamp: "2022-02-10T13:31:55Z"
+  name: nginx-conf
+  namespace: fubar
+data:
+  nginx88: |
+    user  nginx;
+    worker_processes  auto;
+
+    error_log  /var/log/nginx/error.log notice;
+    pid        /var/run/nginx.pid;
+
+
+    events {
+        worker_connections  1024;
+    }
+
+
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                          '$status $body_bytes_sent "$http_referer" '
+                          '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log  /var/log/nginx/access.log  main;
+
+        sendfile        on;
+        #tcp_nopush     on;
+
+        keepalive_timeout  65;
+
+        #gzip  on;
+
+        server {
+            listen       88;
+            listen  [::]:88;
+            server_name  localhost;
+
+            #access_log  /var/log/nginx/host.access.log  main;
+
+            location / {
+                root   /usr/share/nginx/html;
+                index  index.html index.htm;
+            }
+
+            #error_page  404              /404.html;
+
+            # redirect server error pages to the static page /50x.html
+            #
+            error_page   500 502 503 504  /50x.html;
+            location = /50x.html {
+                root   /usr/share/nginx/html;
+            }
+        }
+    }
+  
+-- the pod: 
+apiVersion: v1
+kind: Pod
+metadata:
+  creationTimestamp: null
+  labels:
+    run: nginx88
+  name: nginx88
+  namespace: fubar
+spec:
+  volumes:
+  - name: nginx88
+    configMap:
+      name: nginx-conf
+      items:
+      - key: nginx88
+        path: nginx.conf
+  containers:
+  - image: nginx
+    name: nginx88
+    ports:
+    -  containerPort: 88
+    volumeMounts:
+    - name: nginx88
+      mountPath: /etc/nginx/nginx.conf
+      subPath: nginx.conf
+    resources: {}
+  dnsPolicy: ClusterFirst
+  restartPolicy: Always
+
+you then can get a pod listening port 88 with nginx. 
+
+access to the pod with different namespace: 
+kubectl port-forward -n fubar pod/nginx88 8080:88
+curl http://localhost:8080
+
+note:
+- if you want to use host: then the host name need to be either typed into the etc hosts file or in DNS record. 
+- the spec.ingressClassName need to set to nginx
+- the backend service need to be accessible from the specified namespace

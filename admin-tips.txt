@@ -169,7 +169,6 @@ you can't directly ping to a pod, you have to ping the ip, or the service wrappi
 first install the docker image, as I'm installing from docker hub, so I need to change the image setting below
 then apply the dnsutil pod by 
 
-
 apiVersion: v1
 kind: Pod
 metadata:
@@ -241,6 +240,9 @@ volumes:
 - name: configmap
   configMap:
      name: configMap-name
+     items: 
+       - key: <config-key> -- in case there're multiple config files in the configMap
+         path: this is the name the file will be mounted to the mountPath, you will need indicate this is the subPath if necessary. 
 
 then in the container's section, add volumeMounts section:
 volumeMounts:
@@ -249,6 +251,29 @@ volumeMounts:
   subPath: <subpath in local, if the same volume are to be used in multiple volumeMount>
 
 you can also create a volume with configMap, which will map a configMap to a file. 
+volumes: 
+- volume-name:
+  configMap:
+    name: name-of-configMap
+- volume-name:
+  configMap:
+    name: name-of-configMap
+    items:  -- this is to select a set of keys to be mapped as file, if NO items, all keys will be mapped as file
+    - key: key in config-map
+      path: "file-name"
+
+then in the container section:
+- image: nginx
+  name: container-name
+  volumeMounts:
+  - name: <volume-name defined>
+    mountPath: /etc/nginx/nginx.conf
+    subPath: nginx.conf -- as the items' section define the key and the path, 
+                        so path will be appended to the mountPath, you can specify the subPath to remove the last file name
+
+change the nginx index.html content:
+- kubectl exec -n <namespace> pod/<pod>
+
 
 2. dynamic
 - dynamic provision is provided through PVC with a storage class (storageClassName), when a PVC doesn't have storage class, 
@@ -341,53 +366,219 @@ upgrade the kubeadm
 9. systemctl restart kubelet, systemctl daemon-reload
 10. kubectl uncordon <master-node>
 
-Network policy
-apiVersion: v1
-metadata:
-  name: policy name
-spec:
-- application scope:
-  podSelector - select a group of pods to apply the policy.
-- policyTypes - Ingress or Egress or both. 
-  policyTypes:
-  - Ingress and/or
-  - Egress
-- ingress - define the rules that will apply to the incoming traffic of the selected pods. 
-  - from: -- can have multiple from, each represent a rule
-          -- each rule include:
-          ---- ipBlock: (the cidr), this is external-cluster IP range. 
-          ---- podSelector: (matchLabels)
-          ---- nameSpaceSelector: (matchLabels)
-          ---- or combined:
-               -namespaceSelector: 
-                podSelector:
-          ---- ports: (the type(UDP/TCP), the port, is an array)
-               - protocol: TCP/UDP
-                 port: the port or starting port
-                 endPod: the end port of the range. 
-               - protocol: TCP/UDP
-                 port: 
-  
-- egress - defined the rules that will apply to the outbound traffic of the selected pods. 
-  an array of rules that will apply to the traffic going out of the pods. it includes the following fields:
-  - ports: an array (port, endport, and protocol)
-  - to: include --- can have multiple -to. 
-        - ipBlock (the cidr)
-  - podSelector: apply to the pod in this namespace as this network policy. 
-     matchLabels: 
-        <labels>
-  - namespaceSelector: namespace selector apply to All namespaces in the cluster 
-     matchLabels: 
-        <labels>
-  - podSelector and namespaceSelector can join together by: 
-  -namespaceSelector -- namespaceSelector first then podSelector 
-   podSelector
-   -- this will select pods with label from the selected namespaces. 
+Clean environment:
+kubectl delete all --all -n <namespace>
+kubectl delete ns <namespace>
 
-  please note: all namespace has a default label is: name: the-name. 
+Named Ports:
+- pod port can specify a port name, which can be used in service as target-port
+- similarly service port can also specify a name, and the targetPort can use name port defined in container(pod)
+- ingress can also refer to the service port name. 
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mypod
+  namespace: default
+  labels:
+    app: named-port-pod
+spec:
+  containers: 
+  - name: c-name1
+    image: nginx
+    ports:
+    - name: port-name
+      port: 8080
+
+--- // the service
+apiVersion: v1
+kind: Service
+metadata:
+  name: myservice
+  namespace: default
+spec:
+  ports:
+  - name: http-svc-pod
+    protocol: TCP
+    port: 80
+    targetPort: port-name
+  selector:
+    app: named-port-pod
+- name: <port-name>
+  port: <port-num>
+  target-port: <target-port>
+
+Network policy
+-- Network policy apply to POD - NOT service. So before you check the connectivity, make sure you're connecting to the pod port/ep
+-- check the pod end-point, the following command will print out all POD EPs. 
+-- kubeclt get endpoint -n <namespace> or --all-namespaces.
+-- you set the POD EP by setting the ports/containerPort
+
+fubar: 
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-port-from-namespace
+  namespace: fubar
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: my-app
+    ports:
+      - protocol: TCP
+        port: 80
 
 kubectl label <pod/pod-name> label-key=value --- this will add a new label
 kubectl label pod/pod-name label-key-  --- this will delete a label
+
+ingress: 
+--- the yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ping
+  namespace: ing-internal
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+     paths:
+     - path: /hello
+       pathType: Prefix
+       backend:
+         service:
+           name: hello
+           port:
+             number: 5678
+--- to test the ingress, need to forward local traffic to ingress-controller
+kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 8080:80
+--- please double check the ingress controll's serving port. 
+then test the service by:
+curl -kL localhost:8080/hello
+
+--- scale the deployment
+kubectl scale deployment <develoyment-name> -n <namespace> --replicas=2
+kubectl get deployment -n <>
+
+--- schedule a pod to a node, using the spec.nodeSelector like:
+spec:
+  nodeSelector:
+     label: value
+
+--- check node ready status, which is tainted with NoSchedule
+kubectl get nodes -o yaml | grep -i taint | grep NoSchedule
+
+--- a pod with multiple container:
+apiVersion: v1
+kind: Pod
+metadata:
+  kucc1
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+  - redis
+    image: redis
+
+
+--- create PV:
+apiVersion: v1
+kind: PersistentVolume
+metadata: 
+   name: app-config
+spec:
+   capacity: 
+      storage: 2Gi
+   accessModes: [ReadWriteMany]
+   hostPath:
+      path: /srv/app-config
+
+--- create PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pv-volume
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+       storage: 10Mi
+  storageClassName: csi-hostpath-sc
+
+-- use the PVC
+apiVersion: v1
+kind: Pod
+metadata: 
+   name: web-server
+spec: 
+   containers:
+   - name: nginx
+     image: nginx
+     volumeMounts:
+     - mountPath: "/usr/share/nginx/html"
+       name: mypv
+   volumes:
+   - name: mypv
+     persistentVolumeClaim:
+        claimName: pv-volume
+
+-- upgrade the storage and record:
+kubectl edit pvc pv-volume --record
+and then change the storage: 70Mi
+
+--- monitor logs:
+kubectl logs pod foobar | grep 'unable-to-access-website' > file
+
+--- create sidecar to monitor the logs:
+apiVersion: v1
+kind: Pod
+metadata: 
+  name: 11-factor-app
+spec:
+  containers:
+  - name: 11-factor-app
+    image: busybox
+    args: [/bin/sh -c, 'i=0; while true; do echo "$i: $(date)" >> /var/log/11-factor-app.log; i=$((i+1)); sleep 1; done']
+    volumeMounts:
+    - name: varlog
+      mountPath: /var/log
+  - name: sidecar
+    image: busybox
+    args: [/bin/sh -c, 'tail -n+1 -f /var/log/11-factor-app.log']  
+    volumeMounts:
+    - name: varlog
+      mountPath: /var/log
+  volumes:
+  - name: varlog
+    emptyDir: {}
+-- check the logs:
+kubectl logs -f pod/11-factor-app -c sidecar
+
+--- check CPU/Memory Performance
+kubectl top pod -l name=cpu-loader -A --sort-by=cpu
+-- -l --selector: label
+   -A --all-namespaces=true: include all namespaces
+   --sort-by: only support CPU and mem. 
+   default sort by descending order. 
+
+--- troubleshooting
+1. get node status - identify which node is having problem. 
+kubectl get nodes
+2. check system status of kubelet
+systemctl status kubelet
+3. enable the service
+systemctl enable kubelet
+systemctl restart kubelet
+4. check system journal log
+journalctl -f -t kubelet
+
 
 This can used to test the network policy - by using busybox. 
 create a pod and with an TTY, which will automatically delete the pod after exit. 
@@ -397,11 +588,57 @@ kubectl run busybox --rm -ti --image:ubuntu -n test --labels label=value,label2=
 Run a pod and also expose it as a service
 kubectl run nginx --image:nginx --expose --port 80 -n namespace-test --labels label1=val,label2=val
 
+You can also run a pod with stdin/tty enabled, and you then attach a shell to it.
+containers:
+- name: shell
+  image: busybox
+  securityContext:
+     capabilities: 
+       add:
+       - SYS_PTRACE --- so that you can run ps command.
+  stdin: true
+  tty: true
+
+after you created the pod, you can then attached to it by:
+kubectl attach -it <pod-name> -c shell. // here you don't have to provide a command like -- /bin/sh 
+you can also check the other container details by:
+1. ps -aux -- find out the processes. and identify the pid of the other container
+2. check the content with:
+   head /proc/8/root/etc/nginx/nginx.conf
+3. netstat -ntlp (t: for tcp, l: for listening, p: for program, n: for numeric)
+
 make sure you check the indicated context from the exam, and change it as requested. 
 
 Performance:
 kubectl top node|pod -l|--selector <label> -A|--all-namespaces --sort-by=[cpu|memory]
 kubectl top 
+
+nginx:
+-- install locations:
+/etc/nginx/nginx.conf -- the config location
+-- default.conf
+/etc/nginx/conf.d/default.conf
+-- html location
+/usr/share/nginx/html
+
+busybox:  
+--- use 1.28.3, as the latest version doesn't have nslookup work. 
+--- if you want to use other non-default image, you can use: docker.io/<image-id>, eg:
+--- I've create a workale one with: docker.io/dongshilong/busybox-k8s, which has nslookup and curl
+so you will need to run:
+--- kubectl run --rm -it --image=docker.io/dongshilong/busybox-k8s -n <ns if necessary> -- /bin/sh
+
+check the servic availability:
+-- nslookup - <service name>, please remember if you're running a pod without NS specified, you can still lookup by setting the name like:
+nslookup <svcname>.<namespace>.svc.cluster.local
+-- curl service:<port> -- this is not installed by default.
+-- wget -q -O- service:<port> -- this is installed. 
+
+
+Workload allocation:
+1. need to enable the metrics-server service on the cluster. 
+kubectl get apiservices - this list out all the current services
+
 
 -- set the image repository to aliyun mirror
 sudo curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://mirrors.aliyun.com/kubernetes/apt/doc/apt-key.gpg
@@ -777,102 +1014,6 @@ https://kubernetes.io/docs/reference
 Network policy
 - check the current network provider support the feature
 
--- a sample yaml file
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: test-network-policy
-  namespace: default
-spec:
-  podSelector:
-    matchLabels:
-      role: db
-  policyTypes:
-  - Ingress
-  - Egress
-  ingress:
-  - from:
-    - ipBlock:
-        cidr: 172.17.0.0/16
-        except:
-        - 172.17.1.0/24
-    - namespaceSelector:
-        matchLabels:
-          project: myproject
-          ns: ns-target
-    - podSelector:
-        matchLabels:
-          role: frontend
-    ports:
-    - protocol: TCP
-      port: 6379
-  egress:
-  - to:
-    - ipBlock:
-        cidr: 10.0.0.0/24
-    ports:
-    - protocol: TCP
-      port: 5978
-
--- another one will deny all ingress traffic
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-spec:
-  podSelector: {}
-  policyTypes:
-  - Ingress
-
--- one will allow all ingress traffic
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-spec:
-  podSelector: {}
-  policyTypes:
-  - Ingress
-  ingress:
-  - {}
-
--- one will allow all egress traffic
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-spec:
-  podSelector: {}
-  policyTypes:
-  - Egress
-  egress:
-  - {}
-
--- one will deny all egress traffic
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-spec:
-  podSelector: {}
-  policyTypes:
-  - Egress
-
--- one will deny all egress and ingress traffic
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-spec:
-  podSelector: {}
-  policyTypes:
-  - Egress
-  - Ingress
 
 
 kubectl create ns ns-target 
