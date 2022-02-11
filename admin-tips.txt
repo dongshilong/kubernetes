@@ -579,6 +579,92 @@ systemctl restart kubelet
 4. check system journal log
 journalctl -f -t kubelet
 
+-- list pv sort by name:
+kubectl get pv --sort-by=.metadata.name 
+
+-- daemonset:
+--- default will run on ALL nodes, normal Pod is controlled by scheduler. 
+--- node selector (.spec.selector) can select the nodes to run 
+
+-- static Pod:
+--- like a normal pod, but created and managed directly by kubelet, can operate via API
+--- file place directly on the target node. 
+--- useful for cluster bootstrapping. 
+--- potentially will deprecate in future. 
+
+-- InitContainer 
+-- containers will be created first in the pod. which allow us do some preparation work. 
+apiVersion: v1
+kind: Pod
+metadata: 
+  name: test-InitContainer
+
+spec:
+  volumes:
+  - name: myvol
+    emptyDir: {}
+  containers: 
+  - name: checker
+    image: busybox
+    command: ["/bin/sh -c", "if [ -f /data/checking.txt]; then sleep 1000; else eixt 1; fi"]
+    volumeMounts:
+    - name: myvol
+      mountPath: /data
+  initContainers: 
+  - name: starter
+    image: busybox
+    command: ["/bin/sh -c" "touch /data/checking.txt"]
+    volumeMounts:
+    - name: myvol
+      mountPath: /data
+-- Upgrade container image, and then roll-back:
+kubectl create deployment nginx-app --image=<image>
+kubectl rollout history deployment nginx-app -- this will list out all the revisions
+kubectl rollout undo deployment nginx-app --to-revision=<number> --- default to previous revision
+
+-- get Pods for a service
+1. get service and the pod selector
+kubectl get svc -o wide
+find out the label in the selector column. then select pod using the label by:
+kubectl get pod -l app=demo
+
+-- Mapping a secret to a pod
+1. create the secret with password (for example)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysecret
+type: Opaque
+# note that data has to be base64 encoded
+data: 
+  password: bXlwYXNzd29yZAo=
+  password2: bXlwYXNzd29yZAo=
+2. use the secret in pod:
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod1
+spec:
+  volumes:
+  - name: mypassword
+    secret: 
+      secretName: mysecret
+  containers:
+  - name: bb-1
+    image: docker.io/dongshilong/busybox-k8s
+    volumeMounts:
+    - name: mypassword
+      mountPath: "/data/" # this will cause k8s create a file for each key in secret
+    env:
+    - name: DB_PASSWORD
+      valueFrom:
+        secretKeyRef: 
+          name: mysecret
+          key: password
+    command: ['sh', '-c', 'ls -l /data && env | grep DB_PASSWORD']
+
+the pod will run once and quit (status to Complete), but you check the logs by:
+kubectl logs pod/pod1
 
 This can used to test the network policy - by using busybox. 
 create a pod and with an TTY, which will automatically delete the pod after exit. 
@@ -1011,35 +1097,33 @@ kubectl logs -f -p <Pod or resource> -c <container>
 Kubernetes Reference Documentation:
 https://kubernetes.io/docs/reference
 
-Network policy
-- check the current network provider support the feature
 
+-- autocompletion for kubernetes
+1. install the bash-completion
+apt-get install -y bash-completion
+2. check if the bash-completion installed successfully
+type _init_completion
+3. if _init_completion can't be resolved, try add the following to ~/.bashrc
+source /usr/share/bash-completion/bash_completion
+4. add the kubectl autocompletion scripts to auto-completion (bash completion) by
+source <(kubectl completion bash)
 
+-- using the tmux, shell terminal multiplexier. 
+1. enter the tmux
+tmux
+2. Enable mouse
+tmux set-option -g mouse on
+3. split current window horizentally:
+control-B then % 
+4. split current window vertically 
+control-B then "
+5. close current active pane:
+control-B then x, then confirm with y
+6. Navigating through the window (pane)
+tmux select-pane -L (left), -R (right), -D(down), -U(up)
+or
+control-B then o --- switch to the next pane
+control-B then ; --- switch to the previous pane
+or
+control-B then q, then before the number disappear, press the number
 
-kubectl create ns ns-target 
-kubectl create ns ns-app1 
-kubectl create ns ns-app2
-kubectl -n ns-target create deployment nginx-target --image=nginx:1.19.4
-kubectl -n ns-app1 create deployment --nginx-app1 --image=nginx:1.19.4
-kubectl -n ns-app2 create deployment --nginx-app2 --image=nginx:1.19.4
-target:
-kubectl exec -it deployment/nginx-target -- /bin/sh
-echo "hi, nginx-target" > /usr/share/nginx/html/index.html 
-app1: echo "hi, nginx-app1!" > /usr/share/nginx/html/index.html 
-app2: echo "hi, nginx-app2!" > /usr/share/nginx/html/index.html
-
-kubectl -n ns-target create deployment image=ubuntu:20.04 -- sleep infinity
-kubectl -n ns-app1 create deployment image=ubuntu:20.04 -- sleep infinity
-kubectl -n ns-app2 create deployment image=ubuntu:20.04 -- sleep infinity
-
-create 3 deployment for Ubuntu, to test the connectivity:
-ubuntu-target -- ubuntu-app1 -- ubuntu-app2 --
-kubectl -n ns-target create deployment ubuntu-target --image=ubuntu:20.04 -- sleep infinity
-
-Get svc and endpoints (ep):
-kubectl -n ns-target get services
-nginx-target -- nginx-app1 -- nginx-app2 --
-在 3 个 ubuntu 中分别起 81 端口，python3 -m http.server 81 &
-kubectl -n ns-target expose deployment nginx-target --name=svc- nginx-target --port=80
-kubectl -n ns-app1 expose deployment nginx-app1 --name=svc- nginx-app1 --port=80
-kubectl -n ns-app2 expose deployment nginx-app2 --name=svc- nginx-app2 --port=80
