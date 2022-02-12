@@ -591,6 +591,11 @@ kubectl get pv --sort-by=.metadata.name
 --- file place directly on the target node. 
 --- useful for cluster bootstrapping. 
 --- potentially will deprecate in future. 
+steps:
+ps -aux | grep kubelet 
+find out the --config file path. 
+grep static /var/lib/kubelet/config.yaml
+then create a yaml file in the directory. 
 
 -- InitContainer 
 -- containers will be created first in the pod. which allow us do some preparation work. 
@@ -635,7 +640,8 @@ kind: Secret
 metadata:
   name: mysecret
 type: Opaque
-# note that data has to be base64 encoded
+# note that data has to be base64 encoded, you can use 
+# echo "string" | base64
 data: 
   password: bXlwYXNzd29yZAo=
   password2: bXlwYXNzd29yZAo=
@@ -665,6 +671,77 @@ spec:
 
 the pod will run once and quit (status to Complete), but you check the logs by:
 kubectl logs pod/pod1
+
+--Security Context:
+- set running user and running group
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sc-pod
+spec:
+  containers:
+  - name: sc1
+    image: docker.io/dongshilong/busybox-k8s
+    command: ["sh", "-c", "sleep 20000"]
+    securityContext: # this control the container security context
+      capabilities:
+        add: [SYS_PTRACE]
+  securityContext: # it's a pod level security context
+    runAsUser: 1000
+    runAsGroup: 2000
+    fsGroup: 3000
+    fsGroupChangePolicy: "OnRootMismatch"
+
+-- check server settings:
+kubectl config view
+this is useful to check .kubeconfig file errors. 
+
+
+-- create pod with special capability:
+apiVersion: v1
+kind: Pod
+metadata: 
+  name: pod-cap
+spec:
+  containers:
+  - name: bb
+    image: docker.io/dongshilong/busybox-k8s
+    securityContext:
+      capabilities:
+        add: ["SYS_TIME", "SYS_PTRACE"]
+find available capabilities:
+capsh --print 
+all the capabilities are formated as cap_<name to use (but in upper case)>
+result like: 
+cap_chown,cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid,cap_kill,cap_setgid,cap_setuid,cap_setpcap,cap_linux_immutable,cap_net_bind_service,cap_net_broadcast,cap_net_admin,cap_net_raw,cap_ipc_lock,cap_ipc_owner,cap_sys_module,cap_sys_rawio,cap_sys_chroot,cap_sys_ptrace,cap_sys_pacct,cap_sys_admin,cap_sys_boot,cap_sys_nice,cap_sys_resource,cap_sys_time,cap_sys_tty_config,cap_mknod,cap_lease,cap_audit_write,cap_audit_control,cap_setfcap,cap_mac_override,cap_mac_admin,cap_syslog,cap_wake_alarm,cap_block_suspend,cap_audit_read
+
+Using nslookup to check for service and store result in a file outside the pod:
+1. create a special container with hostPath to the master node (where you run the command). 
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pv-recycler
+  namespace: default
+spec:
+  restartPolicy: Never
+  volumes:
+  - name: vol
+    hostPath:
+      path: /root/result
+  containers:
+  - name: pv-recycler
+    image: "docker.io/dongshilong/busybox-k8s"
+    command: ["/bin/sh", "-c", "nslookup demo > /result/svc.txt && nslookup 172.18.166.177 > /result/pod.txt && ls -l /result"]
+    volumeMounts:
+    - name: vol
+      mountPath: /result
+  nodeSelector: # this is a must, otherwise it very likely it will go nothing.
+    kubernetes.io/hostname: master
+2. create a running pod with busybox:
+kubectl run bb-nslookup --image=docker.io/dongshilong/busybox-k8s -- sleep 20000
+3. run nslookup through the pod by:
+kubectl exec pod/bb-nslookup -- nslookup <service name> > localfilepath
+kubectl exec pod/bb-nslookup -- nslookup <pod-ip> > pod.path 
 
 This can used to test the network policy - by using busybox. 
 create a pod and with an TTY, which will automatically delete the pod after exit. 
