@@ -408,6 +408,34 @@ spec:
   port: <port-num>
   target-port: <target-port>
 
+-- user request
+1. prepare the request string:
+cat user.csr | base64 | tr -d "\n"
+the result will be provided the the CertificateSigningRequest request .spec.request 
+2. create CertificateSigningRequest
+apiVersion: certificates.k8s.io/v1
+kind: CertificateSigningRequest
+metadata: 
+  name: username
+spec:
+  request: <the string from step 1>
+  signerName: kubernetes.io/kube-apiserver-client
+  usages:
+  - client auth
+3. apply the file 
+kubectl apply -f <yaml file from step2>.yaml
+4. approve the CSR from kubernetes:
+kubectl certificate approve username
+5. check the user's privileges:
+kubectl get pod --as username
+6. create Role and RoleBinding for the username
+kubectl create role role-name -n <ns> --resource=<pods,services,deployments> --verb=get,list,delete,create
+7. create the rolebinding
+kubectl create rolebinding rolebinding-name -n <ns> --role=role-name --user=user-name
+8. then check the permission:
+kubectl get pod --as username
+
+
 Network policy
 -- Network policy apply to POD - NOT service. So before you check the connectivity, make sure you're connecting to the pod port/ep
 -- check the pod end-point, the following command will print out all POD EPs. 
@@ -499,6 +527,7 @@ spec:
    accessModes: [ReadWriteMany]
    hostPath:
       path: /srv/app-config
+- PV are volume plugin, but have a lifecycle independent of any individual Pod that uses the PV. 
 
 --- create PVC
 apiVersion: v1
@@ -506,11 +535,11 @@ kind: PersistentVolumeClaim
 metadata:
   name: pv-volume
 spec:
-  accessModes: [ReadWriteOnce]
+  accessModes: [ReadWriteOnce] # this mode will NOT be able to use PV as the mode is different
   resources:
     requests:
        storage: 10Mi
-  storageClassName: csi-hostpath-sc
+  storageClassName: csi-hostpath-sc # this is optional, default to DefaultStorageClass
 
 -- use the PVC
 apiVersion: v1
@@ -529,9 +558,86 @@ spec:
      persistentVolumeClaim:
         claimName: pv-volume
 
+- you can also explicitly bind a PV to a PVC, you need to:
+  .spec.storageClassName: "" # have to be empty, otherwise, default storage class will be used. 
+  .spec.volumeName: <pv-name> # the name of PV to be binded to the PVC.
+
 -- upgrade the storage and record:
 kubectl edit pvc pv-volume --record
 and then change the storage: 70Mi
+
+-- storage class
+- is a profile defined by admin to specify the attributes (qos, backup policy etc)
+- to describe the class of the storage admin offers. 
+- key fields:
+1. provisioner: can be the cloud storage provider. or Local
+2. parameters: provisioner specific.
+3. reclaimPolicy: Retain, Delete(default), Recycle (is deprecated)
+4. volumeBindingMode: Immediate, WaitForFirstConsumer
+5. mountOptions: only apply to PV dynamically created by storageclass. Careful, will fail if provider doesn't support feature. 
+6. allowVolumeExpansion: true or false
+-- create a local storage class:
+apiVersion: storage.k8s.io/v1
+kind: storageclass
+metadata:
+  name: local-storage
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+
+-- dynamically storage provisioning
+1. need a storage class, which set the class or profile of the storage to be provided. 
+   nothing special - all storage class
+2. dynamically provisioning
+   in PVC: just set the storageClassName, will serve the purpose. 
+3. Note that - if PVC do not specify a storageClassName - DefaultStorageClass will be used. 
+             - only ONE PVC can use default storage class name. 
+             - there should have at most one default storageclass. 
+
+
+-- local volume storage
+- a local volume represents a mounted local storage like disk, partition or directory
+- local volume can only be used a static created PV, dynamically provisioning is not supported
+- compare to hostPath volumes, local volume is used in a durable and portable manner without manually scheduling pods to node. 
+- system is aware the node constrains by checking Affinity attribute of PV. 
+
+-- Example of local volume
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: local-pv
+spec:
+  capacity:
+    storage: 2Gi
+  volumeMode: Filesystem # can also be Block (raw block device)
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: local-storage # the volumeBindingMode inside suggests set to WaitForFirstConsumer
+  local:
+    path: /mnt/disks/ssd1
+  nodeAffinity: # this is a must for local volume, scheduler will use this to put the pod to the correct node
+    required: 
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: keyvalue
+          operator: In
+          values:
+          - value1
+          - value2
+
+-- Example of hostPath volume
+apiVersion: v1
+kind: PersistentVolume
+metadata: 
+  name: hostpath-pv
+spec:
+  capacity: 
+    storage: 100Mi
+  accessModes:
+  - ReadWriteMany
+  hostPath: 
+    path: /root/result
+
 
 --- monitor logs:
 kubectl logs pod foobar | grep 'unable-to-access-website' > file
@@ -769,6 +875,10 @@ you can also check the other container details by:
 2. check the content with:
    head /proc/8/root/etc/nginx/nginx.conf
 3. netstat -ntlp (t: for tcp, l: for listening, p: for program, n: for numeric)
+4. check process path:
+   ps -eau | grep <ps-name>
+   ls /proc/<pid>
+  
 
 make sure you check the indicated context from the exam, and change it as requested. 
 
@@ -939,7 +1049,8 @@ kubectl run <pod-name> --image=<image> --dry-run=client -o yaml
 then change the yaml file and add the securityContext section in spec
 securityContext:
   runAsUser: <userid>
-  fsGroup: <groupid>
+  runAsGroup: <gid>
+  fsGroup: <additional groupid>
 
 -- scheduling
 1. mark the node unschedulable
@@ -951,14 +1062,10 @@ kubectl uncordon <nodename>
 kubectl taint node <nodename> key=value:effect -- this will make the node unschedule only if the pod has the explicit tolerance
 --effect here can be: NoSchedule, PreferNoSchedule, NoExecute
 kubectl taint node <nodename> key:effect -- this will add a taint with no value. 
-
-currently taint can only apply to Node 
-
 4. Remove the taint
 kubectl taint node <nodename> key:effect-  -- this will clear the taint (the key and the effect), and the node will be schedule for all workloads
 kubectl taint node <nodename> key-  --- this will clear all taint with the key. 
-
-5. Create tolerance, a tolerance will all a tainted node to accept a workload
+5. Create tolerance, a tolerance will allow a tainted node to accept a workload
 add a tolerations section in spec:
 spec:
   tolerations:
@@ -966,31 +1073,6 @@ spec:
     operator: "Equal" or "Exist"
     value: "taint-key value"
     effect: "NoSchedule" | "PreferNoSchedule" | "NoExecute"
-
---- change the image repository
-1. create the secret to the docker
-kubectl create secret docker-registry mydocker --docker-server=<docker repository> --docker-username=youname --docker-passord=<pwd>
-2. verify the secret
-kubectl get secrets mydocker
-3. add the secret to the service account
-kubectl patch serviceaccount default -p '{"imagePullSecrets": [{"name": "myregistrykey"}]}'
-4. you can export the yaml by
-kubectl get serviceaccounts default -o yaml > sa.yaml
-then edit with the imagePullSecrets and the name of the secret.
-5. apply the yaml by replacing It
-kubectl replace serviceaccount default -f sa.yaml
-6. verify the effectiveness
-kubectl run <image> --image=<image> --restart=Never
-kubectl get pod <image> -o=jsonpath='{.spec.imagePullSecrets[0].name}{"\n"}'
-
---alternatively, you can use your existing docker login credential
-1. log into docker
-docker login
-2. check the config.json file
-cat ~/.docker/config.json
-3. create a secret based on existing docker credential
-kubectl create secret generic dockerregistry --from-file=.dockerconfigjson=<path/to/.docker/config.json> --type=kubernetes.io/dockerconfigjson
-kubectl get secret dockerregistry --output yaml
 
 --install network plugin
 using Calico 
@@ -1024,17 +1106,25 @@ kubectl apply -f ./deploy.yaml
 watch kubectl get pods --all-namespaces
 it will take sometime to have all the pods Running
 
---check the log errors from various places
+--troubleshooting
+0. from the resource:
+kubectl logs pod/<pod-name>
 1. from the system journal
 journalctl -f -u kubelet --- this will produce a log stream containing the kubelet service
 2. check the pod related messages
 kubectl describe -n namespace pod <pod-id>
-3. check the contain related messages
+3. check the container related messages
 3.1 first list out the containers(container ID) inside the pod
+docker ps -a -f name=<pod-name>  #this will list the command and the container ID.
 docker ps -a -f name=<pod-name> --format={{.ID}}
-3.2 then check the docker log
+3.2 then check the docker log # this is same as 
 docker logs <container id>
+kubectl logs pod/pod-name -c <container-name>
 
+-- display pods by age, this sort descending order
+kubectl get pod --all-namespaces --sort-by='{.status.startTime}'
+-- display the pods by age ascending order, NR = 1, leave the header unchanged. 
+kubectl get pod --all-namespaces --sort-by=.status.startTime | awk 'NR==1; NR>1 {print $0 | tac}'
 Expose services from pods or other resources
 kubectl expose pod <pode-name> --name=<svc-name> --type=NodePort --port=<port on cluster> --target-port=<port on the pod>
 
@@ -1183,24 +1273,16 @@ type _init_completion
 3. if _init_completion can't be resolved, try add the following to ~/.bashrc
 source /usr/share/bash-completion/bash_completion
 4. add the kubectl autocompletion scripts to auto-completion (bash completion) by
-source <(kubectl completion bash)
+source <(kubectl completion bash) # this will enable auto-completion with kubectl, but NOT with alias
+5. applying the autocompletion to alias of kubectl 
+complete -F __start_kubectl k # this add the alias function k to __start_kubectl
 
 -- using the tmux, shell terminal multiplexier. 
 1. enter the tmux
 tmux
 2. Enable mouse
 tmux set-option -g mouse on
-3. split current window horizentally:
-control-B then % 
-4. split current window vertically 
-control-B then "
-5. close current active pane:
-control-B then x, then confirm with y
-6. Navigating through the window (pane)
+3. Navigating through the window (pane)
 tmux select-pane -L (left), -R (right), -D(down), -U(up)
-or
-control-B then o --- switch to the next pane
-control-B then ; --- switch to the previous pane
-or
-control-B then q, then before the number disappear, press the number
-
+4. split the window
+tmux split-window -h(horizentally) -v(vertically)
